@@ -8,7 +8,7 @@ show_menu() {
     echo "  作者：@ferdie_jhovie"
     echo "  注意：这是一个免费脚本！"
     echo "====================================="
-    echo "1. 部署节点（安装 Docker、Node.js、npm、pm2、synchronizer-cli 并启动服务）"
+    echo "1. 部署节点（synchronizer-cli 启动服务）"
     echo "2. 查看 pm2 进程列表"
     echo "3. 查看日志 (pm2 logs -f)"
     echo "4. 退出"
@@ -16,7 +16,7 @@ show_menu() {
     echo "请输入选项 (1-4)："
 }
 
-# 部署节点函数（整合所有安装和启动步骤）
+# 部署节点函数
 deploy_node() {
     # 安装依赖
     install_dep() {
@@ -67,7 +67,7 @@ deploy_node() {
         read -rp "按回车继续..."
     }
 
-    # 生成 .env 文件（仅生成一个 .env 文件，移除代理）
+    # 生成 .env 文件
     gen_envs() {
         echo "请输入账户信息，格式：WALLET----synqKey"
         echo "示例: 0x123abc----ae1c98c9-xxxx-xxxx-xxxx"
