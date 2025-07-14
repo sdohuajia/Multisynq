@@ -9,7 +9,7 @@ BASE_METRICS_PORT=7100
 ### =============== 菜单函数 ===============
 menu() {
   clear
-  echo "======= Multisynq CLI  ======="
+  echo "======= Multisynq CLI ======="
   echo "  Synchronizer 安装与启动脚本"
   echo "  作者：@ferdie_jhovie"
   echo "  注意：这是一个免费脚本！"
@@ -49,33 +49,27 @@ deploy_nodes() {
 
   # 生成单一 .env.m1 文件
   echo "📝 生成 .env.m1 文件..."
-  echo "请输入账户信息，格式：WALLET----synqKey----PROXY"
-  echo "如果没有代理，可以使用：WALLET----synqKey"
-  echo "仅允许输入一行账户信息，粘贴后按回车结束"
-  echo "示例: 0x123abc----ae1c98c9-xxxx-xxxx-xxxx----http://user:pass@ip:port"
-  echo "示例: 0x123abc----ae1c98c9-xxxx-xxxx-xxxx"
+  echo "请逐行输入账户信息："
   echo "----------------------------------------"
-  
-  # 读取单行输入
-  read -r line
-  if [[ -z $line ]]; then
-    echo "❌ 未输入账户信息"
+
+  # 逐行提示用户输入
+  read -rp "请输入 WALLET（如 0x123abc）: " WAL
+  if [[ -z $WAL ]]; then
+    echo "❌ WALLET 不能为空"
     read -rp "按回车继续..."
     return
   fi
-  
-  # 使用awk分割输入的行
-  WAL=$(echo "$line" | awk -F '----' '{print $1}')
-  KEY=$(echo "$line" | awk -F '----' '{print $2}')
-  PROXY=$(echo "$line" | awk -F '----' '{print $3}')
-  
-  if [[ -z $WAL || -z $KEY ]]; then
-    echo "❌ 格式错误，输入格式应为: WALLET----synqKey 或 WALLET----synqKey----PROXY"
+
+  read -rp "请输入 synqKey（如 ae1c98c9-xxxx-xxxx-xxxx）: " KEY
+  if [[ -z $KEY ]]; then
+    echo "❌ synqKey 不能为空"
     read -rp "按回车继续..."
     return
   fi
-  
-  # 强制生成单一 .env.m1 文件
+
+  read -rp "请输入 PROXY（可选，如 http://user:pass@ip:port，按回车跳过）: " PROXY
+
+  # 生成 .env.m1 文件
   f=".env.m1"
   if [[ -n $PROXY ]]; then
     cat > "$f" <<EOF
