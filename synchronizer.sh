@@ -1,206 +1,209 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -e
 
-# 主菜单函数
-show_menu() {
-    clear
-    echo "====================================="
-    echo "  Synchronizer 安装与启动脚本"
-    echo "  作者：@ferdie_jhovie"
-    echo "  注意：这是一个免费脚本！"
-    echo "====================================="
-    echo "1. 部署节点（synchronizer-cli 启动服务）"
-    echo "2. 查看 pm2 进程列表"
-    echo "3. 查看日志 (pm2 logs -f)"
-    echo "4. 退出"
-    echo "====================================="
-    echo "请输入选项 (1-4)："
+### =============== 全局配置 ===============
+# 基础端口配置（避免使用8080和9090）
+BASE_HTTP_PORT=7000
+BASE_METRICS_PORT=7100
+
+### =============== 菜单函数 ===============
+menu() {
+  clear
+  echo "======= Multisynq CLI 多代理管理 ======="
+  echo "  Synchronizer 安装与启动脚本"
+  echo "  作者：@ferdie_jhovie"
+  echo "  注意：这是一个免费脚本！"
+  echo "========================================"
+  echo "1) 部署节点（安装依赖、生成配置、启动节点）"
+  echo "2) 查看节点状态 (pm2 ls)"
+  echo "3) 查看节点日志（选择节点）"
+  echo "4) 停止所有节点并清理容器"
+  echo "0) 退出"
+  echo "========================================"
+  read -rp "请输入选项: " opt
+  case $opt in
+    1) deploy_nodes ;;
+    2) pm2 ls; read -rp "按回车继续..." ;;
+    3) show_logs ;;
+    4) stop_all ;;
+    0) exit 0 ;;
+    *) echo "❌ 无效选项"; sleep 1 ;;
+  esac
 }
 
-# 部署节点函数
-deploy_node() {
-    # 安装依赖
-    install_dep() {
-        if ! command -v node &>/dev/null; then
-            curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
-            sudo apt install -y nodejs
-            if command -v node &>/dev/null && command -v npm &>/dev/null; then
-                echo "Node.js 和 npm 安装成功！版本信息："
-                node --version
-                npm --version
-            else
-                echo "Node.js 或 npm 安装失败，请检查错误信息。"
-                exit 1
-            fi
-        else
-            echo "Node.js 和 npm 已安装，版本信息："
-            node --version
-            npm --version
-        fi
+### =============== 部署节点（整合安装依赖、生成配置、启动节点） ===============
+deploy_nodes() {
+  # 安装依赖
+  echo "📦 安装依赖（Node·Docker·CLI）..."
+  if ! command -v node &>/dev/null; then
+    curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
+    sudo apt install -y nodejs
+  fi
+  if ! command -v docker &>/dev/null; then
+    curl -fsSL https://get.docker.com | sh
+    sudo usermod -aG docker $USER
+  fi
+  sudo npm i -g pm2 synchronizer-cli
+  synchronize install-docker
+  echo "✅ 依赖安装完成"
 
-        if ! command -v docker &>/dev/null; then
-            curl -fsSL https://get.docker.com | sh
-            sudo usermod -aG docker $USER
-            if command -v docker &>/dev/null; then
-                echo "Docker 安装成功！版本信息："
-                docker --version
-            else
-                echo "Docker 安装失败，请检查错误信息。"
-                exit 1
-            fi
-        else
-            echo "Docker 已安装，版本信息："
-            docker --version
-        fi
-
-        sudo npm i -g pm2 synchronizer-cli
-        if command -v pm2 &>/dev/null && command -v synchronizer &>/dev/null; then
-            echo "pm2 和 synchronizer-cli 安装成功！版本信息："
-            pm2 --version
-            synchronizer --version
-        else
-            echo "pm2 或 synchronizer-cli 安装失败，请检查错误信息。"
-            exit 1
-        fi
-
-        synchronizer install-docker
-        echo "✅ 依赖安装完成"
-        read -rp "按回车继续..."
-    }
-
-    # 生成 .env 文件
-    gen_envs() {
-        echo "请输入账户信息，格式：WALLET----synqKey"
-        echo "示例: 0x123abc----ae1c98c9-xxxx-xxxx-xxxx"
-        echo "----------------------------------------"
-        
-        # 读取单行输入
-        read -r line
-        if [[ -z $line ]]; then
-            echo "❌ 未输入数据"
-            read -rp "按回车继续..."
-            return
-        fi
-        
-        # 使用awk分割输入的行，使用----作为分隔符
-        WAL=$(echo "$line" | awk -F '----' '{print $1}')
-        KEY=$(echo "$line" | awk -F '----' '{print $2}')
-        
-        if [[ -z $WAL || -z $KEY ]]; then
-            echo "❌ 格式错误，请确保输入格式为 WALLET----synqKey"
-            read -rp "按回车继续..."
-            return
-        fi
-        
-        # 生成单一的 .env 文件
-        cat > ".env" <<EOF
+  # 生成单一 .env.m1 文件
+  echo "📝 生成 .env.m1 文件..."
+  echo "请输入账户信息，格式：WALLET----synqKey----PROXY"
+  echo "如果没有代理，可以使用：WALLET----synqKey"
+  echo "仅允许输入一行账户信息，粘贴后按回车结束"
+  echo "示例: 0x123abc----ae1c98c9-xxxx-xxxx-xxxx----http://user:pass@ip:port"
+  echo "示例: 0x123abc----ae1c98c9-xxxx-xxxx-xxxx"
+  echo "----------------------------------------"
+  
+  # 读取单行输入
+  read -r line
+  if [[ -z $line ]]; then
+    echo "❌ 未输入账户信息"
+    read -rp "按回车继续..."
+    return
+  fi
+  
+  # 使用awk分割输入的行
+  WAL=$(echo "$line" | awk -F '----' '{print $1}')
+  KEY=$(echo "$line" | awk -F '----' '{print $2}')
+  PROXY=$(echo "$line" | awk -F '----' '{print $3}')
+  
+  if [[ -z $WAL || -z $KEY ]]; then
+    echo "❌ 格式错误，输入格式应为: WALLET----synqKey 或 WALLET----synqKey----PROXY"
+    read -rp "按回车继续..."
+    return
+  fi
+  
+  # 强制生成单一 .env.m1 文件
+  f=".env.m1"
+  if [[ -n $PROXY ]]; then
+    cat > "$f" <<EOF
+WALLET=$WAL
+KEY=$KEY
+PROXY=$PROXY
+EOF
+    echo "✔️ 已写入 $f ($WAL) - 使用代理"
+  else
+    cat > "$f" <<EOF
 WALLET=$WAL
 KEY=$KEY
 EOF
-        echo "✔️ 已写入 .env ($WAL)"
-        echo "✅ 已生成 .env 配置文件"
-        read -rp "按回车继续..."
-    }
+    echo "✔️ 已写入 $f ($WAL) - 不使用代理"
+  fi
+  echo "✅ 已生成单一配置文件 .env.m1"
 
-    # 启动节点
-    start_nodes() {
-        echo "🔄 清空旧 pm2 记录..."
-        pm2 delete all &>/dev/null || true
-        
-        echo "🧹 清理所有旧 Docker 容器..."
-        docker ps -aq --filter "name=synchronizer-" | xargs -r docker rm -f
+  # 启动节点
+  echo "🔄 清空旧 pm2 记录..."
+  pm2 delete all &>/dev/null || true
+  echo "🧹 清理所有旧 Docker 容器..."
+  docker ps -aq --filter "name=synchronizer-" | xargs -r docker rm -f
 
-        # 检查 .env 文件是否存在
-        if [[ ! -f .env ]]; then
-            echo "❌ 未找到 .env 文件，请确保已生成配置文件"
-            read -rp "按回车继续..."
-            return
-        fi
-
-        # 加载 .env 文件
-        source ".env"
-        
-        # 设置固定端口
-        http_port=8080
-        metrics_port=9090
-        
-        # 创建唯一的同步名称
-        sync_name="synq-$(date +%s)"
-        
-        echo "🚀 启动节点 (端口: $http_port)..."
-        pm2 start bash --name "synchronize" -- -c \
-            "docker run --rm --name synchronizer \
-            --platform linux/amd64 \
-            -p $http_port:8080 \
-            -p $metrics_port:9090 \
-            -e SYNC_HTTP_PORT=$http_port \
-            -e SYNC_METRICS_PORT=$metrics_port \
-            cdrakep/synqchronizer:latest \
-            --depin wss://api.multisynq.io/depin \
-            --sync-name $sync_name \
-            --launcher cli \
-            --key $KEY \
-            --wallet $WALLET \
-            --time-stabilized"
-        
-        if pm2 list | grep -q "synchronize"; then
-            echo "✅ 节点已启动"
-            echo "📊 节点状态页面可通过以下地址访问:"
-            echo "  - http://localhost:$http_port"
-        else
-            echo "❌ 节点启动失败，请检查错误信息"
-            read -rp "按回车继续..."
-            return
-        fi
-        
-        read -rp "按回车继续..."
-    }
-
-    # 执行安装依赖
-    install_dep
-
-    # 执行生成 .env 文件
-    gen_envs
-
-    # 执行启动节点
-    start_nodes
+  # 仅处理 .env.m1 文件
+  if [[ -f ".env.m1" ]]; then
+    name="m1"
+    source ".env.m1"
+    
+    http_port=$BASE_HTTP_PORT
+    metrics_port=$BASE_METRICS_PORT
+    sync_name="synq-${name}-$(date +%s)"
+    
+    echo "🚀 启动 $name (端口: $http_port)..."
+    if [[ -n $PROXY ]]; then
+      echo "  使用代理: $PROXY"
+      pm2 start bash --name "$name" -- -c \
+        "http_proxy=$PROXY HTTPS_PROXY=$PROXY \
+        docker run --rm --name synchronizer-$name \
+        --platform linux/amd64 \
+        -p $http_port:8080 \
+        -p $metrics_port:9090 \
+        -e SYNC_HTTP_PORT=$http_port \
+        -e SYNC_METRICS_PORT=$metrics_port \
+        cdrakep/synqchronizer:latest \
+        --depin wss://api.multisynq.io/depin \
+        --sync-name $sync_name \
+        --launcher cli \
+        --key $KEY \
+        --wallet $WALLET \
+        --time-stabilized"
+    else
+      echo "  不使用代理"
+      pm2 start bash --name "$name" -- -c \
+        "docker run --rm --name synchronizer-$name \
+        --platform linux/amd64 \
+        -p $http_port:8080 \
+        -p $metrics_port:9090 \
+        -e SYNC_HTTP_PORT=$http_port \
+        -e SYNC_METRICS_PORT=$metrics_port \
+        cdrakep/synqchronizer:latest \
+        --depin wss://api.multisynq.io/depin \
+        --sync-name $sync_name \
+        --launcher cli \
+        --key $KEY \
+        --wallet $WALLET \
+        --time-stabilized"
+    fi
+  else
+    echo "❌ 未找到 .env.m1 文件，节点启动失败"
+    read -rp "按回车继续..."
+    return
+  fi
+  
+  echo "✅ 节点已启动"
+  echo "📊 节点状态页面可通过以下地址访问:"
+  echo "  - m1: http://localhost:$http_port"
+  
+  read -rp "按回车继续..."
 }
 
-# 查看 pm2 进程列表
-show_pm2_list() {
-    echo "当前 pm2 进程列表："
-    pm2 list
+### =============== 查看日志 ===============
+show_logs() {
+  echo "可用节点："
+  pm2 ls | awk 'NR>3 && $2 !~ /-/ {print $2}' | sort | uniq
+  read -rp $'\n输入要查看日志的节点名（如 m1），或回车查看全部: ' name
+  
+  echo "选择操作:"
+  echo "1) 查看实时日志"
+  echo "2) 保存日志到文件"
+  read -rp "请选择 [1]: " log_opt
+  log_opt=${log_opt:-1}
+  
+  if [[ $log_opt == "1" ]]; then
+    if [[ -n $name ]]; then
+      pm2 logs "$name" --lines 20
+    else
+      pm2 logs --lines 20
+    fi
+  else
+    timestamp=$(date +"%Y-%m-%dT%H-%M-%S")
+    if [[ -n $name ]]; then
+      log_file="log_${name}_${timestamp}.txt"
+      echo "保存 $name 的日志到 $log_file ..."
+      pm2 logs "$name" --lines 100 --nostream > "$log_file"
+      echo "✅ 日志已保存到 $log_file"
+    else
+      log_file="log_all_${timestamp}.txt"
+      echo "保存所有节点日志到 $log_file ..."
+      pm2 logs --lines 100 --nostream > "$log_file"
+      echo "✅ 日志已保存到 $log_file"
+    fi
+  fi
+  
+  read -rp "按回车继续..."
 }
 
-# 查看日志
-show_pm2_logs() {
-    echo "正在显示 pm2 日志 (按 Ctrl+C 返回菜单)..."
-    pm2 logs -f synchronize
+### =============== 停止并清理 ===============
+stop_all() {
+  echo "🛑 停止所有 pm2 节点..."
+  pm2 stop all || true
+  pm2 delete all || true
+
+  echo "🧹 清理所有 Docker 容器 synchronizer-* ..."
+  docker ps -aq --filter "name=synchronizer-" | xargs -r docker rm -f
+
+  echo "✅ 所有节点与容器已清理完毕"
+  read -rp "按回车继续..."
 }
 
-# 主循环
-while true; do
-    show_menu
-    read choice
-    case $choice in
-        1)
-            deploy_node
-            read -n 1 -s -r -p "按任意键返回菜单..."
-            ;;
-        2)
-            show_pm2_list
-            read -n 1 -s -r -p "按任意键返回菜单..."
-            ;;
-        3)
-            show_pm2_logs
-            read -n 1 -s -r -p "按任意键返回菜单..."
-            ;;
-        4)
-            echo "退出脚本，感谢使用！"
-            exit 0
-            ;;
-        *)
-            echo "无效选项，请输入 1-4。"
-            read -n 1 -s -r -p "按任意键返回菜单..."
-            ;;
-    esac
-done
+### =============== 主循环 ===============
+while true; do menu; done
