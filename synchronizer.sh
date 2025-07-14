@@ -9,7 +9,7 @@ BASE_METRICS_PORT=7100
 ### =============== 菜单函数 ===============
 menu() {
   clear
-  echo "======= Multisynq CLI 多代理管理 ======="
+  echo "======= Multisynq CLI  ======="
   echo "  Synchronizer 安装与启动脚本"
   echo "  作者：@ferdie_jhovie"
   echo "  注意：这是一个免费脚本！"
