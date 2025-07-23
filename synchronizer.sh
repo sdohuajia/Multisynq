@@ -60,83 +60,76 @@ install_dep() {
 
 # ========== 生成配置 ==========
 gen_envs() {
-  idx=1
-  echo "请输入配置数据，每组配置分行输入（SYNC_NAME 可选，留空将自动生成），结束请输入 'done'"
-  echo "注意：SYNC_NAME 若留空，将默认生成（如 synq-m1-abcdef123456）"
-  echo "示例:"
-  echo "WALLET: 0x123abc..."
-  echo "KEY: ae1c98c9-xxxx-xxxx-xxxx"
-  echo "SYNC_NAME: synq-m1-abcdef123456 (可选)"
-  echo "PROXY: http://user:pass@ip:port (可选)"
-  echo "输入 'done' 开始下一组或结束"
+  CONFIG_DIR="/root/.synchronizer-cli"
   
-  temp=$(mktemp)
+  echo "🌀 开始循环批量生成 .env.mX 和 config.jsonX（按 Ctrl + C 停止）"
+
   while true; do
-    echo -e "\n=== 输入第 $idx 组配置 ==="
-    read -rp "WALLET: " WALLET
-    if [[ "$WALLET" == "done" ]]; then
-      break
+    echo
+    echo "================ 新一轮生成开始 ================"
+
+    # 检查 synchronize 命令是否存在
+    if ! command -v synchronize &>/dev/null; then
+      echo "❌ 未找到 synchronize 命令，请确认是否已安装。"
+      read -rp "按回车继续..."
+      return 1
     fi
-    read -rp "KEY: " KEY
-    read -rp "SYNC_NAME (可选，留空自动生成): " SYNC_NAME
-    read -rp "PROXY (可选，直接回车跳过): " PROXY
-    
-    WALLET=$(echo "$WALLET" | tr -d '[:space:]')
-    KEY=$(echo "$KEY" | tr -d '[:space:]')
-    PROXY=$(echo "$PROXY" | tr -d '[:space:]')
-    
-    # 如果 SYNC_NAME 为空，生成默认值
-    if [[ -z "$SYNC_NAME" ]]; then
-      SYNC_NAME="synq-m$idx-abcdef123456"
-      echo "ℹ️ 未提供 SYNC_NAME，使用默认值: $SYNC_NAME"
-    else
-      SYNC_NAME=$(echo "$SYNC_NAME" | tr -d '[:space:]')
-    fi
-    
-    if [[ -z "$WALLET" || -z "$KEY" ]]; then
-      echo "⚠️ 必填字段（WALLET, KEY）不能为空，跳过此组"
+
+    # 执行 init
+    echo "🚀 正在运行：synchronize init ..."
+    synchronize init
+
+    CONFIG_FILE="$CONFIG_DIR/config.json"
+    if [ ! -f "$CONFIG_FILE" ]; then
+      echo "❌ 未找到 $CONFIG_FILE，跳过当前轮次。"
+      read -rp "按回车继续..."
       continue
     fi
-    
+
+    # 提取字段
+    WALLET=$(jq -r .wallet "$CONFIG_FILE")
+    KEY=$(jq -r .key "$CONFIG_FILE")
+    SYNC_NAME=$(jq -r .syncHash "$CONFIG_FILE")
+
+    # 手动输入代理地址
+    read -rp "🌐 请输入代理地址（例如：http://user:pass@ip:port，留空跳过）: " PROXY
+    PROXY=$(echo "$PROXY" | tr -d '[:space:]')
+
+    # 验证必填字段
+    if [[ -z "$WALLET" || -z "$KEY" || -z "$SYNC_NAME" ]]; then
+      echo "❌ 缺少必要字段（WALLET, KEY, SYNC_NAME），跳过当前轮次"
+      read -rp "按回车继续..."
+      continue
+    fi
+
+    # 自动编号 .env.mX
+    idx=1
+    while [ -e ".env.m$idx" ]; do
+      idx=$((idx+1))
+    done
+    env_file=".env.m$idx"
+
+    # 写入 .env 文件
     {
       echo "WALLET=$WALLET"
       echo "KEY=$KEY"
       echo "SYNC_NAME=$SYNC_NAME"
       [[ -n "$PROXY" ]] && echo "PROXY=$PROXY"
-    } >> "$temp"
-    
-    echo "✔️ 已记录配置 (WALLET: $WALLET, SYNC_NAME: $SYNC_NAME)"
-    idx=$((idx+1))
-  done
-  
-  if [[ ! -s "$temp" ]]; then
-    echo "❌ 未检测到有效配置数据"
-    rm -f "$temp"
+    } > "$env_file"
+
+    echo "✅ 已创建：$env_file"
+
+    # 备份 config.json
+    j=1
+    while [ -e "$CONFIG_DIR/config.json$j" ]; do
+      j=$((j+1))
+    done
+    mv "$CONFIG_FILE" "$CONFIG_DIR/config.json$j"
+    echo "📦 config.json 已保存为：config.json$j"
+
+    echo "✅ 本轮生成完成。准备下一轮（Ctrl + C 退出）..."
     read -rp "按回车继续..."
-    return
-  fi
-  
-  idx=1
-  while IFS= read -r line; do
-    if [[ "$line" == WALLET=* ]]; then
-      f=".env.m$idx"
-      echo > "$f"
-    fi
-    echo "$line" >> "$f"
-    if [[ "$line" == SYNC_NAME=* || "$line" == PROXY=* ]]; then
-      echo "✔️ 已写入 $f (${line#SYNC_NAME=})"
-      idx=$((idx+1))
-    fi
-  done < "$temp"
-  
-  rm -f "$temp"
-  total=$((idx-1))
-  if [[ $total -eq 0 ]]; then
-    echo "⚠️ 未生成任何配置文件"
-  else
-    echo "✅ 共生成 $total 个配置"
-  fi
-  read -rp "按回车继续..."
+  done
 }
 
 # ========== 启动所有节点 ==========
