@@ -59,51 +59,78 @@ install_dep() {
 }
 
 # ========== 生成配置 ==========
-gen_envs() {
-  idx=1
-  echo "请输入 WALLET----KEY----SYNC_NAME----PROXY，每行一个（SYNC_NAME 必须，PROXY 可选），结束 Ctrl+D"
-  echo "注意：SYNC_NAME 从 Multisynq 平台获取（例如 synq-m1-abcdef123456）"
-  echo "示例: 0x123abc...----ae1c98c9-xxxx-xxxx-xxxx----synq-m1-abcdef123456----http://user:pass@ip:port"
-  temp=$(mktemp)
-  cat > "$temp"
-  if [[ ! -s "$temp" ]]; then
-    echo "❌ 未检测到输入数据"
-    rm -f "$temp"
-    read -rp "按回车继续..."
-    return
-  fi
-  # 清理输入：移除首尾空格和空行
-  sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e '/^$/d' "$temp" > "${temp}.clean"
-  mv "${temp}.clean" "$temp"
-  while IFS= read -r line; do
-    [[ -z $line ]] && continue
-    WALLET=$(echo "$line" | awk -F '----' '{print $1}' | tr -d '[:space:]')
-    KEY=$(echo "$line" | awk -F '----' '{print $2}' | tr -d '[:space:]')
-    SYNC_NAME=$(echo "$line" | awk -F '----' '{print $3}' | tr -d '[:space:]')
-    PROXY=$(echo "$line" | awk -F '----' '{print $4}' | tr -d '[:space:]')
-    if [[ -z $WALLET || -z $KEY || -z $SYNC_NAME ]]; then
-      echo "⚠️ 跳过格式错误行: $line"
-      continue
+  gen_envs() {
+    idx=1
+    echo "请输入配置数据，每组配置分行输入（SYNC_NAME 必须，PROXY 可选），结束请输入 'done'"
+    echo "注意：SYNC_NAME 从 Multisynq 平台获取（例如 synq-m1-abcdef123456）"
+    echo "示例:"
+    echo "WALLET: 0x123abc..."
+    echo "KEY: ae1c98c9-xxxx-xxxx-xxxx"
+    echo "SYNC_NAME: synq-m1-abcdef123456"
+    echo "PROXY: http://user:pass@ip:port"
+    echo "输入 'done' 开始下一组或结束"
+    
+    temp=$(mktemp)
+    while true; do
+      echo -e "\n=== 输入第 $idx 组配置 ==="
+      read -rp "WALLET: " WALLET
+      if [[ "$WALLET" == "done" ]]; then
+        break
+      fi
+      read -rp "KEY: " KEY
+      read -rp "SYNC_NAME: " SYNC_NAME
+      read -rp "PROXY (可选，直接回车跳过): " PROXY
+      
+      WALLET=$(echo "$WALLET" | tr -d '[:space:]')
+      KEY=$(echo "$KEY" | tr -d '[:space:]')
+      SYNC_NAME=$(echo "$SYNC_NAME" | tr -d '[:space:]')
+      PROXY=$(echo "$PROXY" | tr -d '[:space:]')
+      
+      if [[ -z "$WALLET" || -z "$KEY" || -z "$SYNC_NAME" ]]; then
+        echo "⚠️ 必填字段（WALLET, KEY, SYNC_NAME）不能为空，跳过此组"
+        continue
+      fi
+      
+      {
+        echo "WALLET=$WALLET"
+        echo "KEY=$KEY"
+        echo "SYNC_NAME=$SYNC_NAME"
+        [[ -n "$PROXY" ]] && echo "PROXY=$PROXY"
+      } >> "$temp"
+      
+      echo "✔️ 已记录配置 (WALLET: $WALLET, SYNC_NAME: $SYNC_NAME)"
+      idx=$((idx+1))
+    done
+    
+    if [[ ! -s "$temp" ]]; then
+      echo "❌ 未检测到有效配置数据"
+      rm -f "$temp"
+      read -rp "按回车继续..."
+      return
     fi
-    f=".env.m$idx"
-    {
-      echo "WALLET=$WALLET"
-      echo "KEY=$KEY"
-      echo "SYNC_NAME=$SYNC_NAME"
-      [[ -n $PROXY ]] && echo "PROXY=$PROXY"
-    } > "$f"
-    echo "✔️ 已写入 $f ($WALLET, sync-name: $SYNC_NAME)"
-    idx=$((idx+1))
-  done < "$temp"
-  rm -f "$temp"
-  total=$((idx-1))
-  if [[ $total -eq 0 ]]; then
-    echo "⚠️ 未生成任何配置文件"
-  else
-    echo "✅ 共生成 $total 个配置"
-  fi
-  read -rp "按回车继续..."
-}
+    
+    idx=1
+    while IFS= read -r line; do
+      if [[ "$line" == WALLET=* ]]; then
+        f=".env.m$idx"
+        echo > "$f"
+      fi
+      echo "$line" >> "$f"
+      if [[ "$line" == SYNC_NAME=* || "$line" == PROXY=* ]]; then
+        echo "✔️ 已写入 $f (${line#SYNC_NAME=})"
+        idx=$((idx+1))
+      fi
+    done < "$temp"
+    
+    rm -f "$temp"
+    total=$((idx-1))
+    if [[ $total -eq 0 ]]; then
+      echo "⚠️ 未生成任何配置文件"
+    else
+      echo "✅ 共生成 $total 个配置"
+    fi
+    read -rp "按回车继续..."
+  }
 
 # ========== 启动所有节点 ==========
 start_nodes() {
