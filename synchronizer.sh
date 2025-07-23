@@ -1,203 +1,237 @@
 #!/usr/bin/env bash
 set -e
 
-### =============== 全局配置 ===============
-# 基础端口配置（避免使用8080和9090）
-BASE_HTTP_PORT=7000
-BASE_METRICS_PORT=7100
+# ========== 全局端口配置 ==========
+# 仅用于仪表盘，移除节点端口映射以匹配官方单开
+DASHBOARD_HTTP_PORT=8000
+DASHBOARD_METRICS_PORT=8100
 
-### =============== 菜单函数 ===============
+# ========== 菜单 ==========
 menu() {
   clear
-  echo "======= Multisynq CLI ======="
-  echo "  Synchronizer 安装与启动脚本"
+  echo "======= Multisynq CLI 多代理管理 ======="
   echo "  作者：@ferdie_jhovie"
-  echo "  注意：这是一个免费脚本！"
+  echo "  注意：这是一个免费脚本！感谢群友@galaxy的代码提供"
   echo "========================================"
-  echo "1) 部署节点（安装依赖、生成配置、启动节点）"
-  echo "2) 查看节点状态 (pm2 ls)"
-  echo "3) 查看节点日志（选择节点）"
-  echo "4) 停止所有节点并清理容器"
+  echo "1) 安装依赖（Node·Docker·CLI）"
+  echo "2) 生成多个 .env.mX 配置"
+  echo "3) 启动所有节点（pm2，含代理）"
+  echo "4) 查看节点状态 (pm2 ls)"
+  echo "5) 查看节点日志（选择节点）"
+  echo "6) 停止所有节点并清理容器"
+  echo "7) 查询积分（支持多代理）"
+  echo "8) 启动仪表盘（可选密码）"
+  echo "9) 检查 Docker 镜像更新"
+  echo "10) 查看系统状态和服务日志"
   echo "0) 退出"
   echo "========================================"
   read -rp "请输入选项: " opt
   case $opt in
-    1) deploy_nodes ;;
-    2) pm2 ls; read -rp "按回车继续..." ;;
-    3) show_logs ;;
-    4) stop_all ;;
+    1) install_dep ;;
+    2) gen_envs ;;
+    3) start_nodes ;;
+    4) pm2 ls; read -rp "按回车继续..." ;;
+    5) show_logs ;;
+    6) stop_all ;;
+    7) check_points ;;
+    8) start_dashboard ;;
+    9) synchronize check-updates; read -rp "按回车继续..." ;;
+    10) synchronize status; read -rp "按回车继续..." ;;
     0) exit 0 ;;
     *) echo "❌ 无效选项"; sleep 1 ;;
   esac
 }
 
-### =============== 部署节点（整合安装依赖、生成配置、启动节点） ===============
-deploy_nodes() {
-  # 安装依赖
-  echo "📦 安装依赖（Node·Docker·CLI）..."
-  if ! command -v node &>/dev/null; then
+# ========== 安装依赖 ==========
+install_dep() {
+  command -v node &>/dev/null || {
     curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
     sudo apt install -y nodejs
-  fi
-  if ! command -v docker &>/dev/null; then
+  }
+  command -v docker &>/dev/null || {
     curl -fsSL https://get.docker.com | sh
     sudo usermod -aG docker $USER
-  fi
+  }
   sudo npm i -g pm2 synchronizer-cli
   synchronize install-docker
   echo "✅ 依赖安装完成"
+  read -rp "按回车继续..."
+}
 
-  # 生成单一 .env.m1 文件
-  echo "📝 生成 .env.m1 文件..."
-  echo "请逐行输入账户信息："
-  echo "----------------------------------------"
-
-  # 逐行提示用户输入
-  read -rp "请输入 WALLET（如 0x123abc）: " WAL
-  if [[ -z $WAL ]]; then
-    echo "❌ WALLET 不能为空"
+# ========== 生成配置 ==========
+gen_envs() {
+  idx=1
+  echo "请输入 WALLET----KEY----SYNC_NAME----PROXY，每行一个（SYNC_NAME 必须，PROXY 可选），结束 Ctrl+D"
+  echo "注意：SYNC_NAME 从 Multisynq 平台获取（例如 synq-m1-abcdef123456）"
+  echo "示例: 0x123abc...----ae1c98c9-xxxx-xxxx-xxxx----synq-m1-abcdef123456----http://user:pass@ip:port"
+  temp=$(mktemp)
+  cat > "$temp"
+  if [[ ! -s "$temp" ]]; then
+    echo "❌ 未检测到输入数据"
+    rm -f "$temp"
     read -rp "按回车继续..."
     return
   fi
-
-  read -rp "请输入 synqKey（如 ae1c98c9-xxxx-xxxx-xxxx）: " KEY
-  if [[ -z $KEY ]]; then
-    echo "❌ synqKey 不能为空"
-    read -rp "按回车继续..."
-    return
-  fi
-
-  read -rp "请输入 PROXY（可选，如 http://user:pass@ip:port，按回车跳过）: " PROXY
-
-  # 生成 .env.m1 文件
-  f=".env.m1"
-  if [[ -n $PROXY ]]; then
-    cat > "$f" <<EOF
-WALLET=$WAL
-KEY=$KEY
-PROXY=$PROXY
-EOF
-    echo "✔️ 已写入 $f ($WAL) - 使用代理"
+  # 清理输入：移除首尾空格和空行
+  sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e '/^$/d' "$temp" > "${temp}.clean"
+  mv "${temp}.clean" "$temp"
+  while IFS= read -r line; do
+    [[ -z $line ]] && continue
+    WALLET=$(echo "$line" | awk -F '----' '{print $1}' | tr -d '[:space:]')
+    KEY=$(echo "$line" | awk -F '----' '{print $2}' | tr -d '[:space:]')
+    SYNC_NAME=$(echo "$line" | awk -F '----' '{print $3}' | tr -d '[:space:]')
+    PROXY=$(echo "$line" | awk -F '----' '{print $4}' | tr -d '[:space:]')
+    if [[ -z $WALLET || -z $KEY || -z $SYNC_NAME ]]; then
+      echo "⚠️ 跳过格式错误行: $line"
+      continue
+    fi
+    f=".env.m$idx"
+    {
+      echo "WALLET=$WALLET"
+      echo "KEY=$KEY"
+      echo "SYNC_NAME=$SYNC_NAME"
+      [[ -n $PROXY ]] && echo "PROXY=$PROXY"
+    } > "$f"
+    echo "✔️ 已写入 $f ($WALLET, sync-name: $SYNC_NAME)"
+    idx=$((idx+1))
+  done < "$temp"
+  rm -f "$temp"
+  total=$((idx-1))
+  if [[ $total -eq 0 ]]; then
+    echo "⚠️ 未生成任何配置文件"
   else
-    cat > "$f" <<EOF
-WALLET=$WAL
-KEY=$KEY
-EOF
-    echo "✔️ 已写入 $f ($WAL) - 不使用代理"
+    echo "✅ 共生成 $total 个配置"
   fi
-  echo "✅ 已生成单一配置文件 .env.m1"
+  read -rp "按回车继续..."
+}
 
-  # 启动节点
-  echo "🔄 清空旧 pm2 记录..."
+# ========== 启动所有节点 ==========
+start_nodes() {
   pm2 delete all &>/dev/null || true
-  echo "🧹 清理所有旧 Docker 容器..."
   docker ps -aq --filter "name=synchronizer-" | xargs -r docker rm -f
-
-  # 仅处理 .env.m1 文件
-  if [[ -f ".env.m1" ]]; then
-    name="m1"
-    source ".env.m1"
-    
-    http_port=$BASE_HTTP_PORT
-    metrics_port=$BASE_METRICS_PORT
-    sync_name="synq-${name}-$(date +%s)"
-    
-    echo "🚀 启动 $name (端口: $http_port)..."
+  idx=1
+  for f in .env.m*; do
+    [[ -f $f ]] || continue
+    name="${f##*.}"
+    source "$f"
+    if [[ -z $SYNC_NAME ]]; then
+      echo "❌ $f 缺少 SYNC_NAME，跳过启动"
+      continue
+    fi
     if [[ -n $PROXY ]]; then
-      echo "  使用代理: $PROXY"
+      echo "🚀 启动 $name 使用代理 $PROXY (sync-name: $SYNC_NAME)"
       pm2 start bash --name "$name" -- -c \
         "http_proxy=$PROXY HTTPS_PROXY=$PROXY \
         docker run --rm --name synchronizer-$name \
         --platform linux/amd64 \
-        -p $http_port:8080 \
-        -p $metrics_port:9090 \
-        -e SYNC_HTTP_PORT=$http_port \
-        -e SYNC_METRICS_PORT=$metrics_port \
         cdrakep/synqchronizer:latest \
         --depin wss://api.multisynq.io/depin \
-        --sync-name $sync_name \
-        --launcher cli \
+        --sync-name $SYNC_NAME \
+        --launcher cli-2.6.1/docker-2025-06-24 \
         --key $KEY \
         --wallet $WALLET \
         --time-stabilized"
     else
-      echo "  不使用代理"
+      echo "🚀 启动 $name 无代理 (sync-name: $SYNC_NAME)"
       pm2 start bash --name "$name" -- -c \
         "docker run --rm --name synchronizer-$name \
         --platform linux/amd64 \
-        -p $http_port:8080 \
-        -p $metrics_port:9090 \
-        -e SYNC_HTTP_PORT=$http_port \
-        -e SYNC_METRICS_PORT=$metrics_port \
         cdrakep/synqchronizer:latest \
         --depin wss://api.multisynq.io/depin \
-        --sync-name $sync_name \
-        --launcher cli \
+        --sync-name $SYNC_NAME \
+        --launcher cli-2.6.1/docker-2025-06-24 \
         --key $KEY \
         --wallet $WALLET \
         --time-stabilized"
     fi
-  else
-    echo "❌ 未找到 .env.m1 文件，节点启动失败"
-    read -rp "按回车继续..."
-    return
-  fi
-  
-  echo "✅ 节点已启动"
-  echo "📊 节点状态页面可通过以下地址访问:"
-  echo "  - m1: http://localhost:$http_port"
-  
+    idx=$((idx+1))
+  done
+  echo "✅ 所有节点已启动"
   read -rp "按回车继续..."
 }
 
-### =============== 查看日志 ===============
-show_logs() {
-  echo "可用节点："
-  pm2 ls | awk 'NR>3 && $2 !~ /-/ {print $2}' | sort | uniq
-  read -rp $'\n输入要查看日志的节点名（如 m1），或回车查看全部: ' name
-  
-  echo "选择操作:"
-  echo "1) 查看实时日志"
-  echo "2) 保存日志到文件"
-  read -rp "请选择 [1]: " log_opt
-  log_opt=${log_opt:-1}
-  
-  if [[ $log_opt == "1" ]]; then
-    if [[ -n $name ]]; then
-      pm2 logs "$name" --lines 20
-    else
-      pm2 logs --lines 20
-    fi
-  else
-    timestamp=$(date +"%Y-%m-%dT%H-%M-%S")
-    if [[ -n $name ]]; then
-      log_file="log_${name}_${timestamp}.txt"
-      echo "保存 $name 的日志到 $log_file ..."
-      pm2 logs "$name" --lines 100 --nostream > "$log_file"
-      echo "✅ 日志已保存到 $log_file"
-    else
-      log_file="log_all_${timestamp}.txt"
-      echo "保存所有节点日志到 $log_file ..."
-      pm2 logs --lines 100 --nostream > "$log_file"
-      echo "✅ 日志已保存到 $log_file"
-    fi
-  fi
-  
-  read -rp "按回车继续..."
-}
-
-### =============== 停止并清理 ===============
+# ========== 停止并清理 ==========
 stop_all() {
-  echo "🛑 停止所有 pm2 节点..."
   pm2 stop all || true
   pm2 delete all || true
-
-  echo "🧹 清理所有 Docker 容器 synchronizer-* ..."
   docker ps -aq --filter "name=synchronizer-" | xargs -r docker rm -f
-
-  echo "✅ 所有节点与容器已清理完毕"
+  echo "✅ 所有节点和容器已停止"
   read -rp "按回车继续..."
 }
 
-### =============== 主循环 ===============
+# ========== 查看日志 ==========
+show_logs() {
+  echo "可用节点："
+  pm2 ls | awk 'NR>3 && $2 !~ /-/ {print $2}' | sort | uniq || echo "无运行中的节点"
+  echo "可用 .env 文件："
+  ls .env.m* 2>/dev/null | sed 's/.env.//' || echo "无 .env.m* 文件"
+  read -rp $'\n输入节点名（如 m1），或回车查看全部: ' name
+  if [[ -n $name ]]; then
+    if pm2 list | grep -q "$name"; then
+      pm2 logs "$name" --lines 50
+    else
+      echo "❌ 节点 $name 未运行"
+    fi
+  else
+    pm2 logs --lines 50
+  fi
+  read -rp "按回车继续..."
+}
+
+# ========== 查询积分 ==========
+check_points() {
+  echo "查询所有 .env.mX 积分..."
+  for f in .env.m*; do
+    [[ -f $f ]] || continue
+    name="${f##*.}"
+    source "$f"
+    echo -e "\n🔹 [$name] $WALLET (sync-name: $SYNC_NAME)"
+    url="https://startsynqing.com/api/external/multisynq/synqers/$WALLET"
+    result=$(curl -s "$url")
+    credits=$(echo "$result" | grep -o '"serviceCredits":[0-9]*' | cut -d':' -f2)
+    if [[ -n $credits ]]; then
+      echo "✅ 总积分: $credits"
+    else
+      echo "❌ API 查询失败，使用 CLI 回退..."
+      synchronize points "$WALLET"
+    fi
+  done
+  read -rp "按回车继续..."
+}
+
+# ========== 启动仪表盘 ==========
+start_dashboard() {
+  echo "是否为单个节点启动仪表盘？(y/N)"
+  read -r single
+  if [[ $single == "y" || $single == "Y" ]]; then
+    ls .env.m* | sed 's/.env.//'
+    read -rp "请输入节点名（如 m1）: " name
+    [[ -f ".env.$name" ]] || { echo "❌ 配置不存在"; read -rp "按回车继续..."; return; }
+    source ".env.$name"
+    port=$((DASHBOARD_HTTP_PORT + ${name#m}))
+    cid=$(docker ps --filter "name=synchronizer-$name" -q)
+    [[ -z $cid ]] && { echo "⚠️ 容器未运行"; read -rp "按回车继续..."; return; }
+    read -rp "仪表盘密码（可选）: " pwd
+    if [[ -n $pwd ]]; then
+      synchronize web --port "$port" --password "$pwd" --container "$cid" &
+    else
+      synchronize web --port "$port" --container "$cid" &
+    fi
+    echo "🌐 仪表盘已启动：http://localhost:$port"
+  else
+    idx=1
+    for f in .env.m*; do
+      [[ -f $f ]] || continue
+      name="${f##*.}"
+      port=$((DASHBOARD_HTTP_PORT + idx))
+      cid=$(docker ps --filter "name=synchronizer-$name" -q)
+      [[ -n $cid ]] && synchronize web --port "$port" --container "$cid" &
+      echo "🌐 [$name] http://localhost:$port"
+      idx=$((idx+1))
+    done
+  fi
+  read -rp "按回车继续..."
+}
+
+# ========== 主循环 ==========
 while true; do menu; done
